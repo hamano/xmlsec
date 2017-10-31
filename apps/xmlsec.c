@@ -268,6 +268,17 @@ static xmlSecAppCmdLineParam privkeyDerParam = {
     NULL
 };
 
+static xmlSecAppCmdLineParam privkeyEngineParam = { 
+    xmlSecAppCmdLineTopicKeysMngr,
+    "--privkey-engine",
+    NULL,
+    "--privkey-engine[:<name>] <id>"
+    "\n\tload private key from OpenSSL engine",
+    xmlSecAppCmdLineParamTypeStringList,
+    xmlSecAppCmdLineParamFlagParamNameValue | xmlSecAppCmdLineParamFlagMultipleValues,
+    NULL
+};
+
 static xmlSecAppCmdLineParam pkcs8PemParam = { 
     xmlSecAppCmdLineTopicKeysMngr,
     "--pkcs8-pem",
@@ -313,7 +324,6 @@ static xmlSecAppCmdLineParam pubkeyDerParam = {
     xmlSecAppCmdLineParamFlagParamNameValue | xmlSecAppCmdLineParamFlagMultipleValues,
     NULL
 };
-
 
 #ifndef XMLSEC_NO_AES    
 static xmlSecAppCmdLineParam aeskeyParam = { 
@@ -803,6 +813,7 @@ static xmlSecAppCmdLineParamPtr parameters[] = {
     &keysFileParam,
     &privkeyParam,
     &privkeyDerParam,
+    &privkeyEngineParam,
     &pkcs8PemParam,
     &pkcs8DerParam,
     &pubkeyParam,
@@ -1971,6 +1982,23 @@ xmlSecAppLoadKeys(void) {
         }
     }
 
+    for(value = privkeyEngineParam.value; value != NULL; value = value->next) {
+        if(value->strValue == NULL) {
+            fprintf(stderr, "Error: invalid value for option \"%s\".\n", 
+                    privkeyEngineParam.fullName);
+            return(-1);
+        } else if(xmlSecAppCryptoSimpleKeysMngrKeyAndCertsLoad(gKeysMngr, 
+                    value->strListValue, 
+                    xmlSecAppCmdLineParamGetString(&pwdParam),
+                    value->paramNameValue,
+                    xmlSecKeyDataFormatEngine) < 0) {
+            fprintf(stderr, "Error: failed to load private key from \"%s\".\n", 
+                    value->strListValue);
+            return(-1);
+        }
+    }
+
+    
     for(value = pkcs8PemParam.value; value != NULL; value = value->next) {
         if(value->strValue == NULL) {
             fprintf(stderr, "Error: invalid value for option \"%s\".\n", 

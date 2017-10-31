@@ -47,7 +47,74 @@ static int      xmlSecOpenSSLDummyPasswordCallback      (char *buf,
 /* conversion from ptr to func "the right way" */
 XMLSEC_PTR_TO_FUNC_IMPL(pem_password_cb)
 XMLSEC_FUNC_TO_PTR_IMPL(pem_password_cb)
+static UI_METHOD *ui_method = NULL;
 
+typedef struct pw_cb_data {
+    const void *password;
+    const char *prompt_info;
+} PW_CB_DATA;
+
+static int ui_open(UI *ui)
+{
+    return UI_method_get_opener(UI_OpenSSL())(ui);
+}
+
+static int ui_read(UI *ui, UI_STRING *uis)
+{
+    if (UI_get_input_flags(uis) & UI_INPUT_FLAG_DEFAULT_PWD
+        && UI_get0_user_data(ui)) {
+        switch (UI_get_string_type(uis)) {
+        case UIT_PROMPT:
+        case UIT_VERIFY:
+            {
+                const char *password =
+                    ((PW_CB_DATA *)UI_get0_user_data(ui))->password;
+                if (password && password[0] != '\0') {
+                    UI_set_result(ui, uis, password);
+                    return 1;
+                }
+            }
+        default:
+            break;
+        }
+    }
+    return UI_method_get_reader(UI_OpenSSL())(ui, uis);
+}
+
+static int ui_write(UI *ui, UI_STRING *uis)
+{
+    if (UI_get_input_flags(uis) & UI_INPUT_FLAG_DEFAULT_PWD
+        && UI_get0_user_data(ui)) {
+        switch (UI_get_string_type(uis)) {
+        case UIT_PROMPT:
+        case UIT_VERIFY:
+            {
+                const char *password =
+                    ((PW_CB_DATA *)UI_get0_user_data(ui))->password;
+                if (password && password[0] != '\0')
+                    return 1;
+            }
+        default:
+            break;
+        }
+    }
+    return UI_method_get_writer(UI_OpenSSL())(ui, uis);
+}
+
+static int ui_close(UI *ui)
+{
+    return UI_method_get_closer(UI_OpenSSL())(ui);
+}
+
+int setup_ui_method(void)
+{
+    ui_method = UI_create_method("OpenSSL application user interface");
+    UI_method_set_opener(ui_method, ui_open);
+    UI_method_set_reader(ui_method, ui_read);
+    UI_method_set_writer(ui_method, ui_write);
+    UI_method_set_closer(ui_method, ui_close);
+    return 0;
+}
 
 /**
  * xmlSecOpenSSLAppInit:
@@ -92,7 +159,7 @@ xmlSecOpenSSLAppInit(const char* config) {
         xmlSecInternalError("xmlSecOpenSSLSetDefaultTrustedCertsFolder", NULL);
         return(-1);
     }
-
+    setup_ui_method();
     return(0);
 }
 
@@ -146,20 +213,24 @@ xmlSecKeyPtr
 xmlSecOpenSSLAppKeyLoad(const char *filename, xmlSecKeyDataFormat format,
                         const char *pwd, void* pwdCallback,
                         void* pwdCallbackCtx) {
-    BIO* bio;
+    BIO* bio = NULL;
     xmlSecKeyPtr key;
 
     xmlSecAssert2(filename != NULL, NULL);
     xmlSecAssert2(format != xmlSecKeyDataFormatUnknown, NULL);
 
-    bio = BIO_new_file(filename, "rb");
-    if(bio == NULL) {
-        xmlSecOpenSSLError2("BIO_new_file", NULL,
-                            "filename=%s", xmlSecErrorsSafeString(filename));
-        return(NULL);
+    if(format == xmlSecKeyDataFormatEngine){
+        key = xmlSecOpenSSLAppKeyLoadBIO ((BIO*)filename, format, pwd, pwdCallback, pwdCallbackCtx);
+    }else{
+        bio = BIO_new_file(filename, "rb");
+        if(bio == NULL) {
+            xmlSecOpenSSLError2("BIO_new_file", NULL,
+                                "filename=%s", xmlSecErrorsSafeString(filename));
+            return(NULL);
+        }
+        key = xmlSecOpenSSLAppKeyLoadBIO (bio, format, pwd, pwdCallback, pwdCallbackCtx);
     }
 
-    key = xmlSecOpenSSLAppKeyLoadBIO (bio, format, pwd, pwdCallback, pwdCallbackCtx);
     if(key == NULL) {
         xmlSecInternalError2("xmlSecOpenSSLAppKeyLoadBIO", NULL,
                             "filename=%s", xmlSecErrorsSafeString(filename));
@@ -235,6 +306,8 @@ xmlSecOpenSSLAppKeyLoadBIO(BIO* bio, xmlSecKeyDataFormat format,
     xmlSecKeyDataPtr data;
     EVP_PKEY* pKey = NULL;
     int ret;
+    ENGINE *e;
+    PW_CB_DATA cb_data;
 
     xmlSecAssert2(bio != NULL, NULL);
     xmlSecAssert2(format != xmlSecKeyDataFormatUnknown, NULL);
@@ -315,6 +388,14 @@ xmlSecOpenSSLAppKeyLoadBIO(BIO* bio, xmlSecKeyDataFormat format,
         return(key);
 #endif /* XMLSEC_NO_X509 */
 
+    case xmlSecKeyDataFormatEngine:
+        cb_data.password = pwd;
+        cb_data.prompt_info = NULL;
+        e = ENGINE_by_id("pkcs11");
+        ENGINE_init(e);
+        pKey = ENGINE_load_private_key(e, (char*)bio, ui_method, &cb_data);
+        ENGINE_finish(e);
+        break;
     default:
         xmlSecOtherError2(XMLSEC_ERRORS_R_INVALID_FORMAT, NULL,
                          "format=%d", (int)format);
